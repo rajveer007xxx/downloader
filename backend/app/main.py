@@ -47,6 +47,10 @@ class ContactRequest(BaseModel):
     email: str
     message: str
 
+class MergeRequest(BaseModel):
+    video_url: HttpUrl
+    audio_url: HttpUrl
+
 def cleanup_old_files():
     """Clean up files older than 1 hour"""
     try:
@@ -206,6 +210,44 @@ async def convert_video(job_id: str, input_path: str, output_format: str):
         jobs_db[job_id]['status'] = 'failed'
         jobs_db[job_id]['error'] = str(e)
 
+async def merge_video_audio(job_id: str, video_path: str, audio_path: str):
+    """Merge video and audio using FFmpeg"""
+    try:
+        jobs_db[job_id]['status'] = 'merging'
+        jobs_db[job_id]['progress'] = 0
+        
+        output_path = TEMP_DIR / f"{job_id}_merged.mp4"
+        
+        cmd = [
+            'ffmpeg', '-i', video_path, '-i', audio_path,
+            '-c:v', 'copy',
+            '-c:a', 'aac',
+            '-map', '0:v:0',
+            '-map', '1:a:0',
+            '-y',
+            str(output_path)
+        ]
+        
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        await process.communicate()
+        
+        if process.returncode == 0:
+            jobs_db[job_id]['status'] = 'completed'
+            jobs_db[job_id]['progress'] = 100
+            jobs_db[job_id]['file_path'] = str(output_path)
+        else:
+            jobs_db[job_id]['status'] = 'failed'
+            jobs_db[job_id]['error'] = 'Merge failed'
+            
+    except Exception as e:
+        jobs_db[job_id]['status'] = 'failed'
+        jobs_db[job_id]['error'] = str(e)
+
 @app.get("/healthz")
 async def healthz():
     return {"status": "ok"}
@@ -328,6 +370,48 @@ async def get_platforms():
         {"name": "Soundcloud", "url": "soundcloud.com"},
     ]
     return {"platforms": platforms, "total": 1000}
+
+@app.post("/api/merge")
+async def start_merge(request: MergeRequest, background_tasks: BackgroundTasks):
+    """Start video and audio merge job"""
+    job_id = str(uuid.uuid4())
+    
+    video_job_id = str(uuid.uuid4())
+    jobs_db[video_job_id] = {
+        'status': 'pending',
+        'progress': 0,
+        'created_at': time.time(),
+    }
+    
+    await download_video(video_job_id, str(request.video_url))
+    
+    if jobs_db[video_job_id]['status'] != 'completed':
+        raise HTTPException(status_code=400, detail="Failed to download video")
+    
+    audio_job_id = str(uuid.uuid4())
+    jobs_db[audio_job_id] = {
+        'status': 'pending',
+        'progress': 0,
+        'created_at': time.time(),
+    }
+    
+    await download_video(audio_job_id, str(request.audio_url))
+    
+    if jobs_db[audio_job_id]['status'] != 'completed':
+        raise HTTPException(status_code=400, detail="Failed to download audio")
+    
+    video_path = jobs_db[video_job_id]['file_path']
+    audio_path = jobs_db[audio_job_id]['file_path']
+    
+    jobs_db[job_id] = {
+        'status': 'pending',
+        'progress': 0,
+        'created_at': time.time(),
+    }
+    
+    background_tasks.add_task(merge_video_audio, job_id, video_path, audio_path)
+    
+    return {"job_id": job_id, "status": "pending"}
 
 @app.post("/api/contact")
 async def submit_contact(request: ContactRequest):
