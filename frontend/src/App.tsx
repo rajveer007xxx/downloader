@@ -61,7 +61,6 @@ function App() {
       }
 
       const data = await response.json()
-      setDownloadJobId(data.job_id)
       
       checkDownloadStatus(data.job_id)
     } catch (err: any) {
