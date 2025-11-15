@@ -62,64 +62,81 @@ def cleanup_old_files():
     except Exception as e:
         print(f"Cleanup error: {e}")
 
-async def get_video_info(url: str) -> Dict[str, Any]:
-    """Extract video information using yt-dlp"""
-    ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'extract_flat': False,
-        'socket_timeout': 30,
-        'retries': 3,
-        'nocheckcertificate': True,
-        'geo_bypass': True,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Referer': 'https://www.google.com/',
-        },
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'web'],
-            }
-        },
-    }
+async def get_video_info(url: str, player_clients: List[str] = None) -> Dict[str, Any]:
+    """Extract video information using yt-dlp with client fallback"""
+    if player_clients is None:
+        player_clients = ['ios', 'tv_embedded', 'web']
     
-    try:
-        loop = asyncio.get_event_loop()
-        def extract():
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                return ydl.extract_info(url, download=False)
-        
-        info = await loop.run_in_executor(None, extract)
-        
-        formats = []
-        if 'formats' in info:
-            for f in info['formats']:
-                format_info = {
-                    'format_id': f.get('format_id'),
-                    'ext': f.get('ext'),
-                    'resolution': f.get('resolution', 'audio only'),
-                    'filesize': f.get('filesize'),
-                    'vcodec': f.get('vcodec'),
-                    'acodec': f.get('acodec'),
-                    'format_note': f.get('format_note', ''),
+    cookie_file = Path('/root/a2zdownloader/cookies/youtube.txt')
+    
+    for client in player_clients:
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
+            'socket_timeout': 30,
+            'retries': 3,
+            'nocheckcertificate': True,
+            'geo_bypass': True,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Referer': 'https://www.google.com/',
+            },
+            'extractor_args': {
+                'youtube': {
+                    'player_client': [client],
                 }
-                formats.append(format_info)
-        
-        return {
-            'title': info.get('title'),
-            'thumbnail': info.get('thumbnail'),
-            'duration': info.get('duration'),
-            'uploader': info.get('uploader'),
-            'formats': formats,
-            'description': info.get('description', '')[:200],
+            },
         }
-    except Exception as e:
-        import traceback
-        error_detail = traceback.format_exc()
-        print(f"Error analyzing video {url}: {error_detail}")
-        raise HTTPException(status_code=400, detail=f"Failed to analyze video: {str(e)}")
+        
+        if cookie_file.exists() and 'youtube.com' in url.lower():
+            ydl_opts['cookiefile'] = str(cookie_file)
+        
+        try:
+            loop = asyncio.get_event_loop()
+            def extract():
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    return ydl.extract_info(url, download=False)
+            
+            info = await loop.run_in_executor(None, extract)
+            
+            formats = []
+            if 'formats' in info:
+                for f in info['formats']:
+                    format_info = {
+                        'format_id': f.get('format_id'),
+                        'ext': f.get('ext'),
+                        'resolution': f.get('resolution', 'audio only'),
+                        'filesize': f.get('filesize'),
+                        'vcodec': f.get('vcodec'),
+                        'acodec': f.get('acodec'),
+                        'format_note': f.get('format_note', ''),
+                    }
+                    formats.append(format_info)
+            
+            return {
+                'title': info.get('title'),
+                'thumbnail': info.get('thumbnail'),
+                'duration': info.get('duration'),
+                'uploader': info.get('uploader'),
+                'formats': formats,
+                'description': info.get('description', '')[:200],
+            }
+        except Exception as e:
+            error_str = str(e)
+            if 'confirm you\'re not a bot' in error_str.lower() or 'sign in' in error_str.lower():
+                print(f"Bot detection with client {client}, trying next client...")
+                continue
+            import traceback
+            error_detail = traceback.format_exc()
+            print(f"Error analyzing video {url} with client {client}: {error_detail}")
+            if client == player_clients[-1]:
+                raise HTTPException(status_code=400, detail=f"Failed to analyze video: {error_str}")
+            continue
+    
+    raise HTTPException(status_code=400, detail="Failed to analyze video with all player clients")
 
 async def download_video(job_id: str, url: str, format_id: Optional[str] = None):
     """Download video in background"""
@@ -155,10 +172,14 @@ async def download_video(job_id: str, url: str, format_id: Optional[str] = None)
             },
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'web'],
+                    'player_client': ['ios', 'tv_embedded', 'web'],
                 }
             },
         }
+        
+        cookie_file = Path('/root/a2zdownloader/cookies/youtube.txt')
+        if cookie_file.exists() and 'youtube.com' in url.lower():
+            ydl_opts['cookiefile'] = str(cookie_file)
         
         loop = asyncio.get_event_loop()
         def download():
