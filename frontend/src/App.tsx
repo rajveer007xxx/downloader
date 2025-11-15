@@ -13,7 +13,6 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [videoInfo, setVideoInfo] = useState<any>(null)
   const [error, setError] = useState('')
-  const [downloadJobId, setDownloadJobId] = useState('')
   const [downloadProgress, setDownloadProgress] = useState(0)
 
   const analyzeVideo = async () => {
