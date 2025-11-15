@@ -64,35 +64,57 @@ async def get_video_info(url: str) -> Dict[str, Any]:
         'quiet': True,
         'no_warnings': True,
         'extract_flat': False,
+        'socket_timeout': 30,
+        'retries': 3,
+        'nocheckcertificate': True,
+        'geo_bypass': True,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Referer': 'https://www.google.com/',
+        },
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'web'],
+            }
+        },
     }
     
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            
-            formats = []
-            if 'formats' in info:
-                for f in info['formats']:
-                    format_info = {
-                        'format_id': f.get('format_id'),
-                        'ext': f.get('ext'),
-                        'resolution': f.get('resolution', 'audio only'),
-                        'filesize': f.get('filesize'),
-                        'vcodec': f.get('vcodec'),
-                        'acodec': f.get('acodec'),
-                        'format_note': f.get('format_note', ''),
-                    }
-                    formats.append(format_info)
-            
-            return {
-                'title': info.get('title'),
-                'thumbnail': info.get('thumbnail'),
-                'duration': info.get('duration'),
-                'uploader': info.get('uploader'),
-                'formats': formats,
-                'description': info.get('description', '')[:200],
-            }
+        loop = asyncio.get_event_loop()
+        def extract():
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                return ydl.extract_info(url, download=False)
+        
+        info = await loop.run_in_executor(None, extract)
+        
+        formats = []
+        if 'formats' in info:
+            for f in info['formats']:
+                format_info = {
+                    'format_id': f.get('format_id'),
+                    'ext': f.get('ext'),
+                    'resolution': f.get('resolution', 'audio only'),
+                    'filesize': f.get('filesize'),
+                    'vcodec': f.get('vcodec'),
+                    'acodec': f.get('acodec'),
+                    'format_note': f.get('format_note', ''),
+                }
+                formats.append(format_info)
+        
+        return {
+            'title': info.get('title'),
+            'thumbnail': info.get('thumbnail'),
+            'duration': info.get('duration'),
+            'uploader': info.get('uploader'),
+            'formats': formats,
+            'description': info.get('description', '')[:200],
+        }
     except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"Error analyzing video {url}: {error_detail}")
         raise HTTPException(status_code=400, detail=f"Failed to analyze video: {str(e)}")
 
 async def download_video(job_id: str, url: str, format_id: Optional[str] = None):
@@ -118,12 +140,33 @@ async def download_video(job_id: str, url: str, format_id: Optional[str] = None)
             'outtmpl': str(output_path),
             'progress_hooks': [progress_hook],
             'quiet': True,
+            'socket_timeout': 30,
+            'retries': 3,
+            'nocheckcertificate': True,
+            'geo_bypass': True,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Referer': 'https://www.google.com/',
+            },
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web'],
+                }
+            },
         }
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+        loop = asyncio.get_event_loop()
+        def download():
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+        
+        await loop.run_in_executor(None, download)
         
     except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"Error downloading video {url}: {error_detail}")
         jobs_db[job_id]['status'] = 'failed'
         jobs_db[job_id]['error'] = str(e)
 
