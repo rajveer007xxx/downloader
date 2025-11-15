@@ -65,21 +65,31 @@ def cleanup_old_files():
 async def get_video_info(url: str, player_clients: List[str] = None) -> Dict[str, Any]:
     """Extract video information using yt-dlp with client fallback"""
     if player_clients is None:
-        player_clients = ['ios', 'tv_embedded', 'web']
+        player_clients = ['ios', 'mweb', 'tv_embedded', 'web', 'web_embedded']
     
     cookie_file = Path('/root/a2zdownloader/cookies/youtube.txt')
+    is_youtube = 'youtube.com' in url.lower() or 'youtu.be' in url.lower()
+    
+    user_agents = {
+        'ios': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+        'mweb': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Mobile Safari/537.36',
+        'tv_embedded': 'Mozilla/5.0 (PlayStation; PlayStation 5/6.00) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15',
+        'web': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'web_embedded': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    }
     
     for client in player_clients:
+        user_agent = user_agents.get(client, user_agents['web'])
+        
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
             'extract_flat': False,
             'socket_timeout': 30,
-            'retries': 3,
             'nocheckcertificate': True,
             'geo_bypass': True,
             'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'User-Agent': user_agent,
                 'Accept-Language': 'en-US,en;q=0.9',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Referer': 'https://www.google.com/',
@@ -91,7 +101,17 @@ async def get_video_info(url: str, player_clients: List[str] = None) -> Dict[str
             },
         }
         
-        if cookie_file.exists() and 'youtube.com' in url.lower():
+        if is_youtube:
+            ydl_opts['extractor_retries'] = 5
+            ydl_opts['retries'] = 5
+            ydl_opts['sleep_interval'] = 1
+            ydl_opts['max_sleep_interval'] = 3
+            if client == 'tv_embedded':
+                ydl_opts['hls_prefer_native'] = True
+        else:
+            ydl_opts['retries'] = 3
+        
+        if cookie_file.exists() and is_youtube:
             ydl_opts['cookiefile'] = str(cookie_file)
         
         try:
@@ -116,7 +136,7 @@ async def get_video_info(url: str, player_clients: List[str] = None) -> Dict[str
                     }
                     formats.append(format_info)
             
-            return {
+            result = {
                 'title': info.get('title'),
                 'thumbnail': info.get('thumbnail'),
                 'duration': info.get('duration'),
@@ -124,6 +144,12 @@ async def get_video_info(url: str, player_clients: List[str] = None) -> Dict[str
                 'formats': formats,
                 'description': info.get('description', '')[:200],
             }
+            
+            if is_youtube:
+                result['_yt_client'] = client
+                result['_yt_user_agent'] = user_agent
+            
+            return result
         except Exception as e:
             error_str = str(e)
             if 'confirm you\'re not a bot' in error_str.lower() or 'sign in' in error_str.lower():
@@ -156,29 +182,51 @@ async def download_video(job_id: str, url: str, format_id: Optional[str] = None)
                 jobs_db[job_id]['status'] = 'completed'
                 jobs_db[job_id]['file_path'] = d['filename']
         
+        is_youtube = 'youtube.com' in url.lower() or 'youtu.be' in url.lower()
+        
+        url_hash = str(hash(url))
+        cached_client_key = f"yt_client_{url_hash}"
+        user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        player_clients = ['ios', 'mweb', 'tv_embedded', 'web']
+        
+        if is_youtube and cached_client_key in jobs_db:
+            cached = jobs_db[cached_client_key]
+            player_clients = [cached['client']]  # Use only the successful client
+            user_agent = cached['user_agent']
+            print(f"Reusing successful YouTube client: {cached['client']}")
+        
         ydl_opts = {
             'format': format_id if format_id else 'best',
             'outtmpl': str(output_path),
             'progress_hooks': [progress_hook],
             'quiet': True,
             'socket_timeout': 30,
-            'retries': 3,
             'nocheckcertificate': True,
             'geo_bypass': True,
             'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'User-Agent': user_agent,
                 'Accept-Language': 'en-US,en;q=0.9',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Referer': 'https://www.google.com/',
             },
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['ios', 'tv_embedded', 'web'],
+                    'player_client': player_clients,
                 }
             },
         }
         
+        if is_youtube:
+            ydl_opts['extractor_retries'] = 5
+            ydl_opts['retries'] = 5
+            ydl_opts['sleep_interval'] = 1
+            ydl_opts['max_sleep_interval'] = 3
+            ydl_opts['hls_prefer_native'] = True
+        else:
+            ydl_opts['retries'] = 3
+        
         cookie_file = Path('/root/a2zdownloader/cookies/youtube.txt')
-        if cookie_file.exists() and 'youtube.com' in url.lower():
+        if cookie_file.exists() and is_youtube:
             ydl_opts['cookiefile'] = str(cookie_file)
         
         loop = asyncio.get_event_loop()
@@ -282,6 +330,17 @@ async def analyze_video(request: AnalyzeRequest):
     """Analyze video URL and return available formats"""
     cleanup_old_files()
     info = await get_video_info(str(request.url))
+    
+    if '_yt_client' in info:
+        url_hash = str(hash(str(request.url)))
+        jobs_db[f"yt_client_{url_hash}"] = {
+            'client': info['_yt_client'],
+            'user_agent': info['_yt_user_agent'],
+            'created_at': time.time(),
+        }
+        del info['_yt_client']
+        del info['_yt_user_agent']
+    
     return info
 
 @app.post("/api/download")
